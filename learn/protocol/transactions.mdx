@@ -4,12 +4,15 @@ title: "Transactions"
 
 ## Overview
 
-Transactions are cryptographically signed instructions from accounts that update the state of the Starknet network. Starknet supports only [three types](#transaction_types) of transactions, with each type going through the same [lifecycle](#transaction_lifecycle) to receive its [execution and finality statuses](#transaction_statuses). Every transaction that was executed successfully is issued a [receipt](#transaction_receipt), which includes its statuses, as well as other information about it.
+A transaction is a signed request to change Starknet's state. Every interaction with the network, whether transferring tokens, deploying a contract, or calling a function, happens through a transaction. Starknet supports [three types](#transaction-types) of transactions, each going through the same [lifecycle](#transaction-lifecycle) to receive [execution and finality statuses](#transaction-statuses). Successfully executed transactions are issued a [receipt](#transaction-receipt) containing their statuses and other details.
+
+All transactions are currently version 3 (v3), which requires fees to be paid in [STRK](/learn/protocol/strk/) and specifies [resource bounds](/learn/protocol/fees/#fee-limits) for `l1_gas`, `l2_gas`, and `l1_data_gas`. For the full specification of transaction fields, see the [transaction fields and hash calculations reference](/learn/cheatsheets/transactions-reference/).
 
 Additional information
 
 - [Transaction fields and hash calculations reference](/learn/cheatsheets/transactions-reference/) in _References_
 - [`starknet_api_openrpc.json`](https://github.com/starkware-libs/starknet-specs/blob/master/api/starknet_api_openrpc.json) in the `starknet-specs` GitHub repository
+- [SNIP-8: Transaction v3 structure](https://github.com/starknet-io/SNIPs/blob/main/SNIPS/snip-8.md)
 
 ## Transaction types
 
@@ -22,40 +25,40 @@ Starknet supports the following types of transactions:
 | `DEPLOY_ACCOUNT` | Deploys a new account contract to Starknet.<Tip>         For more information about deploying a new account, see Accounts.   </Tip>                                                                                                                                                                                                                                                                                                                                                                                        |
 
 <Note>
-  The [`L1HandlerTransaction type`](/learn/protocol/messaging/#l1_handler_transaction) is also a valid transaction type within Starknet, be it cannot be broadcast through the Starknet API like other transaction types, as it was specifically designed for internal Starknet operations (particularly, handling messages from L1 to L2).
+  The [`L1HandlerTransaction type`](/learn/protocol/messaging/#l1_handler_transaction) is also a valid transaction type within Starknet, but it cannot be broadcast through the Starknet API like other transaction types, as it was specifically designed for internal Starknet operations (particularly, handling messages from L1 to L2).
 
   The `DEPLOY` transaction type existed in Starknet for deploying account before being replaced by `DEPLOY_ACCOUNT`. `DEPLOY` only had one version (v0) and is now unsupported by Starknet.
 </Note>
 
-Each transaction type is versioned, with versions increasing when the fields that comprise the transaction change, either with the addition of a new field or the removal of an existing field. The following table summarizes the current, deprecated, and unsupported versions of each transaction type:
+Each transaction type is versioned, with versions increasing when the fields that comprise the transaction change, either with the addition of a new field or the removal of an existing field. As of Starknet v0.14.0, only v3 transactions compliant with [JSON-RPC v0.8](https://github.com/starkware-libs/starknet-specs) (signing on all three resource bounds: `l1_gas`, `l2_gas`, `l1_data_gas`) are accepted. All previous versions have been terminated per [SNIP-16](https://github.com/starknet-io/SNIPs/blob/main/SNIPS/snip-16.md).
 
-| Type             | Current version | Deprecated versions | Unsupported versions |
-| ---------------- | --------------- | ------------------- | -------------------- |
-| `INVOKE`         | v3              | None                | v1, v0               |
-| `DECLARE`        | v3              | None                | v2, v1, v0           |
-| `DEPLOY_ACCOUNT` | v3              | None                | v1                   |
+| Type             | Current version | Terminated versions |
+| ---------------- | --------------- | ------------------- |
+| `INVOKE`         | v3              | v1, v0              |
+| `DECLARE`        | v3              | v2, v1, v0          |
+| `DEPLOY_ACCOUNT` | v3              | v1                  |
 
 <Warning>
-  Do not submit a transaction that uses an unsupported transaction type, as it cannot be included in a proof, and therefore cannot become part of a Starknet block.
+  The sequencer rejects any transaction that is not a v3 transaction compliant with JSON-RPC v0.8. Transactions of versions 0, 1, and 2 are no longer supported because they are incompatible with the [fee market](/learn/protocol/fees/) and only support fee payment in ETH, while v3 transactions pay fees in [STRK](/learn/protocol/strk/).
 
-  Sending transaction that use deprecated versions is still supported, but support will be removed in an upcoming Starknet release.
+  Users or accounts that previously relied on older transaction versions can use a paymaster service or the `meta_tx_v0` syscall to operate through v3 transactions. For more details, see the [v0.14.0 pre-release notes](https://community.starknet.io/t/sn-0-14-0-pre-release-notes/115618).
 </Warning>
 
 ## Transaction lifecycle
 
 The high-level steps in the Starknet transaction lifecycle are as follows:
 
-1. **Transaction submission:** A transaction is submitted to a sequencer by a full node.
-2. **Mempool validation:** The sequencer's [mempool](#transaction_mempool) performs preliminary validation of the transaction, such as ensuring that its invoker's balance exceeds the transaction's `max_fee` value, assuring the transaction's calldata length is within the legal limit, and more. If the transaction is invalid, it does not proceed.
-3. **Sequencer validation:** The sequencer performs preliminary validation of the transaction before executing it to ensure that the transaction is still valid. If the transaction is invalid, it does not proceed.
-4. **Execution:** The sequencer batches all transactions that passed the preliminary validation into a block, and applies them to the state sequentially. If a transaction fails during execution, it is included in the block with as reverted.
-5. **Proof generation and verification:** The prover uses the [Starknet operating system](/learn/protocol/snos/) to computes the proof for the correct execution of all transactions in the block, and transmits it to the L1 verifier, which verifies it. At this point, the L1 state is updated to include the transaction.
+1. **Transaction submission:** A transaction is submitted to one of the sequencers via a gateway. The gateway routes the transaction to one of the active sequencers.
+2. **Mempool validation:** The sequencer's [mempool](#mempools) performs preliminary validation of the transaction, such as ensuring that the sender's balance covers the transaction's resource bounds, that the calldata length is within the legal limit, and more. If the transaction is invalid, it does not proceed.
+3. **Sequencer validation:** The sequencer performs additional validation of the transaction before executing it to ensure the transaction is still valid. If the transaction is invalid, it does not proceed.
+4. **Execution:** The sequencer batches all transactions that passed validation into a [block](/learn/protocol/blocks/) and applies them to the state sequentially. If a transaction fails during execution, it is included in the block as reverted.
+5. **Proof generation and verification:** The prover uses the [Starknet operating system](/learn/protocol/snos/) to compute the proof for the correct execution of all transactions in the block and transmits it to the L1 verifier, which verifies it. At this point, the L1 state is updated to include the transaction.
 
 ### Mempools
 
-Up to and including Starknet v0.13.5, transactions were received and ordered by the sequencer in a first-in-first-out (FIFO) fashion. Starting from Starknet v0.14.0, each sequencer will instead maintain a mempool, decouping the transaction order of arrival from the transaction ordering in blocks, for which they are can decide their own policy.
+Since Starknet v0.14.0, each sequencer maintains its own mempool, decoupling the transaction order of arrival from the transaction ordering in blocks. Each sequencer can decide its own ordering policy. This replaced the previous first-in-first-out (FIFO) approach used in Starknet v0.13.5 and earlier.
 
-The introduction of mempools will have the following implications on how transactions are processed:
+Mempools have the following implications on how transactions are processed:
 
 - **Nonces**: Transactions with a nonce greater than the sender's current nonce + $x$ will be rejected by the mempool, where:
   - A sender's current nonce is the sender's nonce in the latest finalized state at the time the transaction is received
@@ -68,9 +71,23 @@ The introduction of mempools will have the following implications on how transac
 - **Transaction time-to-live (TTL)**: Transactions that cannot be included in a block and have exceeded their TTL, currently configured to be 5 mins, are periodically evicted from the mempool
 - **`DECLARE transactions time-to-mature (TTM)`**: Before being inserted into the mempool, `DECLARE` transactions are sent to a "waiting room" until they exceed their TTM, where TTM \< TTL but is still TBD. While in the "waiting room", `DECLARE` transactions can't be replaced, and transactions sent with the same nonce as a transaction in the "waiting room" by the same account are rejected
 
+### Transaction fees and resource bounds
+
+All v3 transactions pay fees in [STRK](/learn/protocol/strk/) and must specify resource bounds for three resource types:
+
+- **`l2_gas`**: Measures L2 computation and data.
+- **`l1_data_gas`**: Measures the L1 data required to post state diffs.
+- **`l1_gas`**: Measures the L1 gas required for L2-to-L1 messages.
+
+For each resource, the transaction specifies a `max_amount` and a `max_price_per_unit`, both denominated in STRK (FRI). The sequencer rejects transactions where the bid's `price_per_unit` for any resource is below the current base fee for that resource.
+
+Starknet uses an [EIP-1559](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1559.md)-style fee market for `l2_gas`. During periods of congestion, users can set a higher `tip` to prioritize their transactions. The sequencer receives `(base_fee + tip) * l2_gas_used` for each transaction.
+
+For a full description of fee components, resource pricing, and fee estimation, see [Fees](/learn/protocol/fees/).
+
 ## Transaction statuses
 
-Since Starknet version 0.14.0, the finality statuses are the following:
+Starknet transactions have two types of statuses: finality and execution. The finality statuses (introduced in Starknet v0.14.0 with [RPC v0.9](https://github.com/starkware-libs/starknet-specs)) are:
 
 | Type          | Status           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -92,7 +109,7 @@ When a transaction is marked as `REVERTED`, the following state implications occ
 | Nonce increases   | The nonce value for the account of the failed transaction iterates despite the failure.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Fee charge        | The sequencer charges a fee for the execution of the transaction up to the point of failure, and a respective `Transfer` event is emitted.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Partial reversion | All changes that occurred during the validation stage are not reverted. However, all changes that occurred during the execution stage are reverted, including all messages to L1 or any events that were emitted during this stage. Events might still be emitted from the validation stage or the fee charge stage.                                                                                                                                                                                                                                                                 |
-| Fee calculation   | The fee charged for `REVERTED` transactions is the smaller of the following two values:<br /><br />• The maximum fee that the user is willing to pay, either `max_fee` (pre-v3 transactions) or $\texttt{max\_amount} \cdot \texttt{max\_price\_per\_unit}$ (v3 transactions).<br /><br />• The total consumed resources.<Note>         Consumed resources are resources used for the execution of the transaction up to the point of failure, including Cairo steps, builtins, syscalls, L1 messages, events, and state diffs during the validation and execution stages.   </Note> |
+| Fee calculation   | The fee charged for `REVERTED` transactions is the smaller of the following two values:<br /><br />• The maximum fee that the user is willing to pay: $\texttt{max\_amount} \cdot \texttt{max\_price\_per\_unit}$ for each resource.<br /><br />• The total consumed resources.<Note>         Consumed resources are resources used for the execution of the transaction up to the point of failure, including Cairo steps, builtins, syscalls, L1 messages, events, and state diffs during the validation and execution stages.   </Note> |
 
 ## Transaction receipt
 
@@ -108,7 +125,7 @@ A transaction receipt can be obtained by using the Starknet API's `starknet_getT
 | `block_number`       | The sequential number of the block that includes the transaction |
 | `messages_sent`      | A list of messages sent to L1.                                   |
 | `events`             | The events emitted.                                              |
-| `execution_resource` | A summary of the execution resources used by the transaction.    |
+| `execution_resources` | A summary of the execution resources used by the transaction.    |
 | `type`               | The type of the transaction.                                     |
 
 The following is an example of a transaction receipt:
@@ -178,3 +195,12 @@ The following is an example of a transaction receipt:
   "id": 1
 }
 ```
+
+## Related topics
+
+- [Fees](/learn/protocol/fees/) -- fee components, resource pricing, estimation, and limits
+- [Accounts](/learn/protocol/accounts/) -- account structure, validation, and deployment
+- [Blocks](/learn/protocol/blocks/) -- block structure and commitments
+- [L1-L2 messaging](/learn/protocol/messaging/) -- cross-layer communication and L1 handler transactions
+- [SNOS](/learn/protocol/snos/) -- the Starknet operating system and proof generation
+- [Transaction fields and hash calculations](/learn/cheatsheets/transactions-reference/) -- detailed field reference for all transaction types
